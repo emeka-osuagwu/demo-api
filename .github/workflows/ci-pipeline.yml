@@ -1,0 +1,123 @@
+name: Integration Pipeline
+
+on:
+  pull_request:
+    branches:
+      - develop
+    types:
+      - opened
+      - closed
+
+jobs:
+  test_and_integration:
+    if: github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    container:
+      image: lorisleiva/laravel-docker:latest
+
+    env:
+      REDIS_PORT: 6379
+      BROADCAST_DRIVER: log
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+
+    services:
+      mysql:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: test
+        ports:
+          - 33306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+      redis:
+        image: redis
+        ports:
+          - 6379/tcp
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=3
+ 
+    steps:
+    - uses: actions/checkout@v1
+      with:
+        fetch-depth: 1
+ 
+    - name: Install composer dependencies
+      run: |
+        apk update && \
+        apk add --no-cache zlib-dev g++ git icu-dev zip libzip-dev freetype-dev libjpeg-turbo-dev autoconf
+        docker-php-ext-install intl opcache pcntl pdo pdo_mysql
+        pecl install apcu
+        pecl install grpc
+        docker-php-ext-enable apcu
+        docker-php-ext-enable grpc
+        docker-php-ext-configure zip
+        docker-php-ext-install zip
+        docker-php-ext-configure gd
+        docker-php-ext-install gd
+        rm composer.lock
+        composer update
+        composer install --no-scripts
+ 
+    - name: Prepare Laravel Application
+      run: |
+        cp .env.github .env
+        php artisan key:generate
+ 
+    - name: Run Testsuite
+      run: php artisan test 
+
+  notify_success:
+    runs-on: ubuntu-latest
+    needs: test_and_integration
+    if: ${{ success() }}
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Slack Notification
+      uses: rtCamp/action-slack-notify@v2
+      env:
+          SLACK_COLOR: '#00FF00'
+          SLACK_TITLE: 'This PR was opened by ${{ github.event.pull_request.user.login }} on Sabinus-API is ready for review :bell:'
+          SLACK_MESSAGE: ${{ github.event.pull_request.title }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SHOW_EVENT: true
+          SHOW_REF: false
+          SITE_NAME: Sabinus-API (develop-branch)
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: test_and_integration
+    if: ${{ failure() }}
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Slack Notification
+      uses: rtCamp/action-slack-notify@v2
+      env:
+          SLACK_COLOR: '#FF0000'
+          SLACK_TITLE: 'This PR was opened by ${{ github.event.pull_request.user.login }} on Sabinus-API has failed the CI pipeline :x:'
+          SLACK_MESSAGE: ${{ github.event.pull_request.title }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SHOW_EVENT: true
+          SHOW_REF: false
+          SITE_NAME: Sabinus-API (develop-branch)
+
+  notify_merge:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Slack Notification
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_COLOR: '#00FF00'
+        SLACK_TITLE: 'PR made by ${{ github.event.pull_request.user.login }} has been merged to Sabinus-API develop branch is ready to be deployed :large_green_circle:'
+        SLACK_MESSAGE: '${{ github.event.pull_request.title }}'
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        SHOW_EVENT: true
+        SHOW_REF: true
+        SITE_NAME: Sabinus-API (develop-branch)
+# a slack webhook would be added to github secrets
